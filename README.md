@@ -2,6 +2,20 @@
 
 SafeWalk is a high-fidelity, interactive mobile app prototype designed for women's safety during solo travel. It features a dark-themed, empowering, and premium UI with a focus on quick access to safety features.
 
+It is structured as a monorepo containing a React Native frontend and a FastAPI backend.
+
+## How to run the frontend
+```bash
+cd frontend
+npx expo start
+```
+
+## How to run the backend
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
+
 ## Features
 
 * **Interactive Map**: View safe zones, caution areas, and dangerous regions using a color-coded heatmap.
@@ -12,48 +26,16 @@ SafeWalk is a high-fidelity, interactive mobile app prototype designed for women
 
 ## Tech Stack
 
+### Frontend
 * **Framework**: React Native (Expo)
 * **Navigation**: Expo Router (File-based routing)
 * **Styling**: React Native StyleSheet (Custom Design System with dark theme and premium aesthetics)
 * **Mapping**: Leaflet (via `react-leaflet` or standard Leaflet for web fallback)
 * **Animations**: React Native Animated API
 
-## Getting Started
-
-### Prerequisites
-
-* Node.js installed
-* Expo CLI (`npm install -g expo-cli`)
-
-### Installation
-
-1. Clone the repository and navigate to the project folder:
-   ```bash
-   cd safewalk
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Start the development server:
-   ```bash
-   npx expo start
-   ```
-
-### Running on Devices
-
-* **Web**: Press `w` in the terminal to open the app in a web browser. The map feature is optimized for web viewing.
-* **iOS / Android**: Use the Expo Go app on your physical device to scan the QR code provided in the terminal.
-
-## Design System
-
-The app employs a custom design system defined in `constants/theme.js`. It leverages a deep dark palette with vibrant accent colors to ensure high contrast and readability.
-* **Primary Accent**: Teal (`#00d4b0`)
-* **Safe Status**: Green (`#10d97e`)
-* **Caution Status**: Amber (`#f5a623`)
-* **Danger/SOS Status**: Red (`#ff3b5c`)
+### Backend
+* **Framework**: FastAPI
+* **Machine Learning**: scikit-learn, pandas, numpy
 
 ## License
 
