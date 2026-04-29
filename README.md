@@ -13,8 +13,10 @@ npx expo start
 ## How to run the backend
 ```bash
 cd backend
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+> **Mobile devices:** The `--host 0.0.0.0` flag is required so your Android/iOS device can reach the server over Wi-Fi.
+> Update `frontend/services/api.js` → `BASE_URL` to your machine's local IP (run `ipconfig` to find it).
 
 ## Features
 

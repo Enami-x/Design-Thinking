@@ -1,18 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { C } from '../constants/theme';
-
-const SEGMENTS = [
-  { label: 'Hitech City Rd', status: 'safe',    pct: 30 },
-  { label: 'Durgam Cheruvu', status: 'safe',    pct: 25 },
-  { label: 'Ayyappa Society', status: 'caution', pct: 20 },
-  { label: 'Madhapur Main',  status: 'safe',    pct: 15 },
-  { label: 'Inorbit Entry',  status: 'unsafe',  pct: 10 },
-];
-const SEG_COLOR = { safe: C.safe, caution: C.caution, unsafe: C.danger };
-const SEG_DIM   = { safe: C.safeDim, caution: C.cautionDim, unsafe: C.dangerDim };
 
 const SHARE_CONTACTS = [
   { initial: 'P', bg: '#5b21b6' },
@@ -38,6 +28,64 @@ function SectionLabel({ children }) {
 
 export default function RouteDetailScreen() {
   const router = useRouter();
+
+  // Read params passed from the home screen
+  const p = useLocalSearchParams();
+
+  const activeRoute  = p.activeRoute  ?? 'safest';
+  const destName     = p.destName     ?? 'Your Destination';
+  const safestKm     = p.safestKm     ?? '--';
+  const safestTime   = p.safestTime   ?? '--';
+  const fastestKm    = p.fastestKm    ?? '--';
+  const fastestTime  = p.fastestTime  ?? '--';
+  const safetyScore  = activeRoute === 'fastest'
+    ? Number(p.fastestScore ?? 55)
+    : Number(p.safestScore  ?? 78);
+  const km   = activeRoute === 'fastest' ? fastestKm   : safestKm;
+  const time = activeRoute === 'fastest' ? fastestTime : safestTime;
+
+  // Breakdown values (floats passed as strings via URL params)
+  const lighting        = parseFloat(p.lighting        ?? '0.8');
+  const crowd           = parseFloat(p.crowd           ?? '0.5');
+  const incidentDensity = parseInt  (p.incidentDensity ?? '0', 10);
+
+  const lightingLabel = lighting > 0.7 ? 'Good' : lighting > 0.4 ? 'Fair' : 'Poor';
+  const crowdLabel    = crowd    > 0.7 ? 'Busy' : crowd    > 0.3 ? 'Moderate' : 'Empty';
+  const incLabel      = incidentDensity === 0 ? 'Clear' : `${incidentDensity} nearby`;
+
+  const lightingColor = lighting > 0.4 ? C.safe    : C.danger;
+  const lightingDim   = lighting > 0.4 ? C.safeDim : C.dangerDim;
+  const crowdColor    = crowd    > 0.3 ? C.caution : C.danger;
+  const crowdDim      = crowd    > 0.3 ? C.cautionDim : C.dangerDim;
+  const incColor      = incidentDensity === 0 ? C.safe    : C.danger;
+  const incDim        = incidentDensity === 0 ? C.safeDim : C.dangerDim;
+
+  const scoreColor    = safetyScore >= 75 ? C.safe : safetyScore >= 45 ? C.caution : C.danger;
+
+  // Dynamic route segments based on safety score
+  const segments = safetyScore >= 75
+    ? [
+        { status: 'safe',    pct: 50 },
+        { status: 'safe',    pct: 30 },
+        { status: 'caution', pct: 20 },
+      ]
+    : safetyScore >= 45
+    ? [
+        { status: 'safe',    pct: 30 },
+        { status: 'caution', pct: 40 },
+        { status: 'unsafe',  pct: 30 },
+      ]
+    : [
+        { status: 'caution', pct: 20 },
+        { status: 'unsafe',  pct: 50 },
+        { status: 'unsafe',  pct: 30 },
+      ];
+
+  const SEG_COLOR = { safe: C.safe, caution: C.caution, unsafe: C.danger };
+
+  // Shorten destination for display title
+  const shortDest = destName.split(',')[0].trim();
+
   return (
     <View style={s.container}>
       {/* Header */}
@@ -46,23 +94,61 @@ export default function RouteDetailScreen() {
           <Ionicons name="arrow-back-outline" size={15} color={C.textSecondary} />
           <Text style={s.backText}>Back to map</Text>
         </TouchableOpacity>
-        <View style={s.safetyPill}>
-          <Ionicons name="checkmark-circle" size={13} color={C.safe} />
-          <Text style={s.safetyPillText}>Safety 87%</Text>
+        <View style={[s.safetyPill, { backgroundColor: scoreColor + '22', borderColor: scoreColor + '50' }]}>
+          <Ionicons name="checkmark-circle" size={13} color={scoreColor} />
+          <Text style={[s.safetyPillText, { color: scoreColor }]}>
+            Safety {safetyScore}%
+          </Text>
         </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
         {/* Title */}
-        <Text style={s.title}>Hitech City → Madhapur</Text>
-        <Text style={s.meta}>2.4 km  ·  26 min walk</Text>
+        <Text style={s.title} numberOfLines={1}>
+          Your Location → {shortDest}
+        </Text>
+        <Text style={s.meta}>
+          {km === '--' || km === 'N/A' ? `${km} km` : `${km}`}
+          {'  ·  '}
+          {time === '--' || time === 'N/A' ? `${time} min` : `${time} min walk`}
+        </Text>
+
+        {/* Route toggle indicator */}
+        <View style={s.routeTypePill}>
+          <Ionicons
+            name={activeRoute === 'safest' ? 'shield-checkmark' : 'flash'}
+            size={13}
+            color={activeRoute === 'safest' ? C.teal : C.caution}
+          />
+          <Text style={[s.routeTypeText, { color: activeRoute === 'safest' ? C.teal : C.caution }]}>
+            {activeRoute === 'safest' ? 'Safest Route' : 'Fastest Route'}
+          </Text>
+        </View>
 
         {/* Safety Breakdown */}
         <SectionLabel>SAFETY BREAKDOWN</SectionLabel>
         <View style={s.bRow}>
-          <BreakdownCard icon="flashlight-outline" label="Lighting"  value="Good"     color={C.safe}    dimColor={C.safeDim} />
-          <BreakdownCard icon="people-outline"     label="Crowd"     value="Moderate"  color={C.caution} dimColor={C.cautionDim} />
-          <BreakdownCard icon="warning-outline"    label="Incidents" value="2 nearby"  color={C.danger}  dimColor={C.dangerDim} />
+          <BreakdownCard
+            icon="flashlight-outline"
+            label="Lighting"
+            value={lightingLabel}
+            color={lightingColor}
+            dimColor={lightingDim}
+          />
+          <BreakdownCard
+            icon="people-outline"
+            label="Crowd"
+            value={crowdLabel}
+            color={crowdColor}
+            dimColor={crowdDim}
+          />
+          <BreakdownCard
+            icon="warning-outline"
+            label="Incidents"
+            value={incLabel}
+            color={incColor}
+            dimColor={incDim}
+          />
         </View>
 
         {/* Route Segments */}
@@ -70,7 +156,7 @@ export default function RouteDetailScreen() {
         <View style={s.segCard}>
           {/* Progress bar */}
           <View style={s.segBar}>
-            {SEGMENTS.map((seg, i) => (
+            {segments.map((seg, i) => (
               <View
                 key={i}
                 style={[
@@ -80,8 +166,8 @@ export default function RouteDetailScreen() {
                     backgroundColor: SEG_COLOR[seg.status],
                     borderTopLeftRadius: i === 0 ? 8 : 0,
                     borderBottomLeftRadius: i === 0 ? 8 : 0,
-                    borderTopRightRadius: i === SEGMENTS.length - 1 ? 8 : 0,
-                    borderBottomRightRadius: i === SEGMENTS.length - 1 ? 8 : 0,
+                    borderTopRightRadius: i === segments.length - 1 ? 8 : 0,
+                    borderBottomRightRadius: i === segments.length - 1 ? 8 : 0,
                   }
                 ]}
               />
@@ -117,7 +203,19 @@ export default function RouteDetailScreen() {
         </View>
 
         {/* Start Journey */}
-        <TouchableOpacity style={s.startBtn} onPress={() => router.push('/sos')} activeOpacity={0.85}>
+        <TouchableOpacity
+          style={s.startBtn}
+          onPress={() => router.push({
+            pathname: '/sos',
+            params: {
+              destLat:  p.destLat  ?? '',
+              destLng:  p.destLng  ?? '',
+              destName: shortDest,
+              timeMins: time,   // e.g. "26" or "26 min walk"
+            },
+          })}
+          activeOpacity={0.85}
+        >
           <Text style={s.startBtnText}>Start Journey</Text>
           <Ionicons name="arrow-forward" size={18} color={C.bg} />
         </TouchableOpacity>
@@ -137,19 +235,27 @@ const s = StyleSheet.create({
   backText: { color: C.textSecondary, fontSize: 13, fontWeight: '500' },
   safetyPill: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: C.safeDim, borderRadius: 20,
-    paddingHorizontal: 11, paddingVertical: 5,
-    borderWidth: 1, borderColor: C.safe + '35',
+    borderRadius: 20, paddingHorizontal: 11, paddingVertical: 5,
+    borderWidth: 1,
   },
-  safetyPillText: { color: C.safe, fontSize: 12, fontWeight: '700' },
+  safetyPillText: { fontSize: 12, fontWeight: '700' },
 
   scroll: { paddingHorizontal: 20, paddingBottom: 48 },
 
   title: {
-    color: C.textPrimary, fontSize: 28, fontWeight: '800',
+    color: C.textPrimary, fontSize: 26, fontWeight: '800',
     letterSpacing: -0.7, marginTop: 14, marginBottom: 6,
   },
-  meta: { color: C.textSecondary, fontSize: 14, marginBottom: 32 },
+  meta: { color: C.textSecondary, fontSize: 14, marginBottom: 12 },
+
+  routeTypePill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    alignSelf: 'flex-start', marginBottom: 28,
+    backgroundColor: C.surface2, borderRadius: 20,
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderWidth: 1, borderColor: C.border,
+  },
+  routeTypeText: { fontSize: 12, fontWeight: '700' },
 
   sectionLabel: {
     color: C.textSecondary, fontSize: 10, fontWeight: '700',
@@ -160,8 +266,7 @@ const s = StyleSheet.create({
   bRow: { flexDirection: 'row', gap: 10, marginBottom: 32 },
   bCard: {
     flex: 1, backgroundColor: C.surface, borderRadius: 16,
-    padding: 14, alignItems: 'center', gap: 8,
-    borderWidth: 1,
+    padding: 14, alignItems: 'center', gap: 8, borderWidth: 1,
   },
   bIconBg: {
     width: 44, height: 44, borderRadius: 22,
@@ -175,10 +280,7 @@ const s = StyleSheet.create({
     backgroundColor: C.surface, borderRadius: 16, padding: 16,
     marginBottom: 32, borderWidth: 1, borderColor: C.border,
   },
-  segBar: {
-    flexDirection: 'row', height: 10, borderRadius: 8,
-    overflow: 'hidden', marginBottom: 14,
-  },
+  segBar: { flexDirection: 'row', height: 10, borderRadius: 8, overflow: 'hidden', marginBottom: 14 },
   segBlock: { height: 10 },
   segLegend: { flexDirection: 'row', gap: 18 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },

@@ -1,11 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Switch, Animated, Platform
+  Switch, Animated, Platform, TextInput
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { C } from '../constants/theme';
+
+import { WebView } from 'react-native-webview';
+import * as Location from 'expo-location';
+import { API } from '../services/api';
 
 const CATEGORIES = [
   { id: 'lighting',   label: 'Poor Lighting', icon: 'bulb-outline' },
@@ -16,20 +20,22 @@ const CATEGORIES = [
 ];
 
 const TIME_OPTIONS = [
-  { key: 'now',     label: 'Now' },
-  { key: 'earlier', label: 'Earlier today' },
-  { key: 'week',    label: 'This week' },
+  { key: 'now',           label: 'Now' },
+  { key: 'earlier today', label: 'Earlier today' },
+  { key: 'this week',     label: 'This week' },
 ];
 
 function MiniMap() {
   const mapRef = useRef(null);
+  const pos = [17.4435, 78.3772];
+
   useEffect(() => {
     if (Platform.OS !== 'web') return;
     let map;
     const init = async () => {
       const L = (await import('leaflet')).default;
       if (mapRef.current && !mapRef.current._leaflet_id) {
-        map = L.map(mapRef.current, { zoomControl: false }).setView([17.4435, 78.3772], 15);
+        map = L.map(mapRef.current, { zoomControl: false }).setView(pos, 15);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           attribution: '© OpenStreetMap', subdomains: 'abcd',
         }).addTo(map);
@@ -37,22 +43,49 @@ function MiniMap() {
           html: `<div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#ff3b5c;border:3px solid white;transform:rotate(-45deg);box-shadow:0 0 14px rgba(255,59,92,0.65);"></div>`,
           className: '', iconSize: [26, 26], iconAnchor: [13, 26],
         });
-        const m = L.marker([17.4435, 78.3772], { icon, draggable: true }).addTo(map);
-        m.on('dragend', () => {});
+        L.marker(pos, { icon, draggable: true }).addTo(map);
       }
     };
     init();
     return () => { if (map) map.remove(); };
   }, []);
 
-  if (Platform.OS !== 'web') {
-    return (
-      <View style={[s.miniMap, { justifyContent: 'center', alignItems: 'center', backgroundColor: C.surface2 }]}>
-        <Ionicons name="location-outline" size={32} color={C.danger} />
-      </View>
-    );
+  if (Platform.OS === 'web') {
+    return <div ref={mapRef} style={{ width: '100%', height: '100%', borderRadius: '18px' }} />;
   }
-  return <div ref={mapRef} style={{ width: '100%', height: '100%', borderRadius: '18px' }} />;
+
+  // Mobile WebView Map
+  const mapHtml = `
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          body { margin: 0; padding: 0; background: #080c10; }
+          #map { width: 100vw; height: 100vh; }
+          .pin { width:26px; height:26px; border-radius:50% 50% 50% 0; background:#ff3b5c; border:3px solid white; transform:rotate(-45deg); box-shadow:0 0 14px rgba(255,59,92,0.65); }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          const map = L.map('map', { zoomControl: false }).setView(${JSON.stringify(pos)}, 15);
+          L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+          const icon = L.divIcon({ html: '<div class="pin"></div>', className: '', iconSize: [26, 26], iconAnchor: [13, 26] });
+          L.marker(${JSON.stringify(pos)}, { icon, draggable: true }).addTo(map);
+        </script>
+      </body>
+    </html>
+  `;
+
+  return (
+    <WebView
+      originWhitelist={['*']}
+      source={{ html: mapHtml }}
+      style={{ backgroundColor: '#080c10', borderRadius: 18 }}
+    />
+  );
 }
 
 export default function ReportScreen() {
@@ -61,13 +94,44 @@ export default function ReportScreen() {
   const [selectedTime, setSelectedTime] = useState('now');
   const [anonymous, setAnonymous] = useState(true);
   const [submitted, setSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [otherNote, setOtherNote] = useState('');
   const successAnim = useRef(new Animated.Value(0)).current;
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!selectedCategory) return;
-    setSubmitted(true);
-    Animated.spring(successAnim, { toValue: 1, useNativeDriver: true, tension: 60, friction: 7 })
-      .start(() => setTimeout(() => router.push('/alerts'), 1400));
+    setSubmitError('');
+
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') throw new Error('Location permission denied');
+
+      const loc = await Location.getCurrentPositionAsync({});
+
+      const payload = {
+        lat: loc.coords.latitude,
+        lng: loc.coords.longitude,
+        type: selectedCategory === 'lighting' ? 'poor-lighting' : selectedCategory,
+        time_of_day: selectedTime,
+        anonymous,
+        ...(selectedCategory === 'other' && otherNote ? { note: otherNote } : {}),
+      };
+
+      await API.reportIncident(payload);
+
+      setSubmitted(true);
+      setOtherNote('');
+      Animated.spring(successAnim, { toValue: 1, useNativeDriver: true, tension: 60, friction: 7 })
+        .start(() => setTimeout(() => {
+          setSubmitted(false);
+          successAnim.setValue(0);
+          setSelectedCategory(null);
+          setSelectedTime('now');
+          router.push('/alerts');
+        }, 1400));
+    } catch (err) {
+      setSubmitError('Failed to submit report. Please check your connection and try again.');
+    }
   };
 
   return (
@@ -119,6 +183,19 @@ export default function ReportScreen() {
           })}
         </View>
 
+        {/* Other description input */}
+        {selectedCategory === 'other' && (
+          <TextInput
+            style={s.otherInput}
+            placeholder="Briefly describe what happened…"
+            placeholderTextColor={C.textSecondary}
+            value={otherNote}
+            onChangeText={setOtherNote}
+            multiline
+            numberOfLines={3}
+          />
+        )}
+
         {/* Time */}
         <Text style={s.sectionLabel}>WHEN DID THIS HAPPEN?</Text>
         <View style={s.timeRow}>
@@ -160,6 +237,7 @@ export default function ReportScreen() {
         </View>
 
         {/* Submit */}
+        {submitError ? <Text style={s.submitError}>{submitError}</Text> : null}
         <TouchableOpacity
           style={[s.submitBtn, !selectedCategory && s.submitBtnDisabled]}
           onPress={handleSubmit}
@@ -169,7 +247,7 @@ export default function ReportScreen() {
           {submitted ? (
             <Animated.View style={[s.submitInner, { opacity: successAnim, transform: [{ scale: successAnim }] }]}>
               <Ionicons name="checkmark-circle" size={20} color={C.bg} />
-              <Text style={s.submitText}>Report Submitted!</Text>
+              <Text style={s.submitText}>Report Submitted ✓</Text>
             </Animated.View>
           ) : (
             <Text style={s.submitText}>Submit Report</Text>
@@ -261,4 +339,11 @@ const s = StyleSheet.create({
   submitBtnDisabled: { opacity: 0.3, shadowOpacity: 0 },
   submitInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   submitText: { color: C.bg, fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
+  submitError: { color: C.danger, fontSize: 13, marginBottom: 12, textAlign: 'center' },
+
+  otherInput: {
+    backgroundColor: C.surface, borderRadius: 14, borderWidth: 1, borderColor: C.teal,
+    color: C.textPrimary, fontSize: 14, padding: 14, marginBottom: 26,
+    minHeight: 80, textAlignVertical: 'top',
+  },
 });

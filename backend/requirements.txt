@@ -1,5 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
 scikit-learn
 pandas
 numpy
+joblib
+supabase==1.2.0
+python-dotenv

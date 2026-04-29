@@ -6,6 +6,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { MOCK_ALERTS } from '../data/mockData';
 import { C } from '../constants/theme';
 
+import * as Location from 'expo-location';
+import { API } from '../services/api';
+
 const SEV_COLOR = { high: C.danger, medium: C.caution, low: C.textSecondary };
 const SEV_DIM   = { high: C.dangerDim, medium: C.cautionDim, low: 'rgba(100,116,139,0.12)' };
 const CAT_ICON  = {
@@ -13,6 +16,13 @@ const CAT_ICON  = {
   'suspicious':    'eye-outline',
   'harassment':    'hand-right-outline',
   'road':          'warning-outline',
+};
+const CAT_TITLE = {
+  'poor-lighting': 'Poor Lighting',
+  'suspicious':    'Suspicious Activity',
+  'harassment':    'Harassment Reported',
+  'road':          'Road Hazard',
+  'other':         'Incident Reported',
 };
 
 const FILTERS = ['All', 'Nearby', 'Recent'];
@@ -33,6 +43,15 @@ function AlertCard({ alert, index }) {
   const color    = SEV_COLOR[alert.severity];
   const dimColor = SEV_DIM[alert.severity];
 
+  const timeAgo = (() => {
+    if (!alert.occurred_at) return 'Recently';
+    const dt = new Date(alert.occurred_at);
+    const diff = Math.floor((new Date() - dt) / 60000);
+    if (diff < 60) return `${diff}m ago`;
+    if (diff < 1440) return `${Math.floor(diff / 60)}h ago`;
+    return `${Math.floor(diff / 1440)}d ago`;
+  })();
+
   return (
     <Animated.View style={[s.card, { opacity, transform: [{ translateY }] }]}>
       {/* left accent */}
@@ -45,8 +64,8 @@ function AlertCard({ alert, index }) {
             <Ionicons name={CAT_ICON[alert.type] || 'alert-circle-outline'} size={16} color={color} />
           </View>
           <View style={s.cardTitleBlock}>
-            <Text style={s.cardTitle}>{alert.title}</Text>
-            <Text style={s.cardLocation} numberOfLines={1}>{alert.location}</Text>
+            <Text style={s.cardTitle}>{CAT_TITLE[alert.type] || 'Incident'}</Text>
+            <Text style={s.cardLocation} numberOfLines={1}>Near {alert.lat.toFixed(4)}, {alert.lng.toFixed(4)}</Text>
           </View>
           {/* Upvote */}
           <TouchableOpacity
@@ -68,12 +87,12 @@ function AlertCard({ alert, index }) {
         <View style={s.metaRow}>
           <View style={s.metaItem}>
             <Ionicons name="location-outline" size={11} color={C.textSecondary} />
-            <Text style={s.metaText}>{alert.distance} away</Text>
+            <Text style={s.metaText}>{alert.distance_km}km away</Text>
           </View>
           <View style={s.metaDot} />
           <View style={s.metaItem}>
             <Ionicons name="time-outline" size={11} color={C.textSecondary} />
-            <Text style={s.metaText}>{alert.timeAgo}</Text>
+            <Text style={s.metaText}>{timeAgo}</Text>
           </View>
         </View>
       </View>
@@ -83,10 +102,29 @@ function AlertCard({ alert, index }) {
 
 export default function AlertsScreen() {
   const [activeFilter, setActiveFilter] = useState('All');
+  const [alerts, setAlerts] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = MOCK_ALERTS.filter(a => {
-    if (activeFilter === 'Nearby') return parseFloat(a.distance) < 1;
-    if (activeFilter === 'Recent') return a.timeAgo.includes('m');
+  useEffect(() => {
+    const fetchAlerts = async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+      
+      const loc = await Location.getCurrentPositionAsync({});
+      const data = await API.getIncidents(loc.coords.latitude, loc.coords.longitude);
+      if (data) setAlerts(data);
+      setLoading(false);
+    };
+    fetchAlerts();
+  }, []);
+
+  const filtered = alerts.filter(a => {
+    if (activeFilter === 'Nearby') return a.distance_km < 1.0;
+    if (activeFilter === 'Recent') {
+       const dt = new Date(a.occurred_at);
+       const diffHours = (new Date() - dt) / 3600000;
+       return diffHours < 24;
+    }
     return true;
   });
 
