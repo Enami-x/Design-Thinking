@@ -17,7 +17,7 @@ const HEATMAP_COLORS = { safe: '#10d97e', caution: '#f5a623', danger: '#ff3b5c' 
 const DEFAULT_CENTER = [17.4435, 78.3772];
 
 // ─── ORS geocode ──────────────────────────────────────────────────────────────
-// focusLoc: [lat, lng] to bias results towards user's current location
+// focusLoc: [lat, lng] — used to build a hard 50 km boundary circle around user
 async function geocode(query, focusLoc = null) {
   // 1. Detect raw coordinate input: "17.3850 78.4867" or "17.3850,78.4867"
   const coordMatch = query.match(/^\s*(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)\s*$/);
@@ -29,30 +29,33 @@ async function geocode(query, focusLoc = null) {
     }
   }
 
-  // 2. Build focus param — bias results towards user's GPS location if available
-  const focus = focusLoc
-    ? `&focus.point.lat=${focusLoc[0]}&focus.point.lon=${focusLoc[1]}`
-    : '';
+  // 2. Hard boundary circle (50 km radius) around user — if no GPS, use Hyderabad centre
+  const centre = focusLoc || [17.4435, 78.3772];
+  const circle = `&boundary.circle.lat=${centre[0]}&boundary.circle.lon=${centre[1]}&boundary.circle.radius=50`;
+  // focus.point re-ranks within the circle so the closest match comes first
+  const focus = `&focus.point.lat=${centre[0]}&focus.point.lon=${centre[1]}`;
 
-  // 3. Fast ORS Geocoding, India-biased + proximity-biased
-  const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&boundary.country=IN&size=5${focus}`;
+  // 3. Search within circle (India, 50 km around user)
+  const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&boundary.country=IN&size=5${circle}${focus}`;
   const res = await fetch(url);
   const data = await res.json();
 
-  if (!data.features || data.features.length === 0) {
-    // Global fallback (no country restriction, still proximity-biased)
-    const globalUrl = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&size=5${focus}`;
-    const globalRes = await fetch(globalUrl);
-    const globalData = await globalRes.json();
-    if (!globalData.features || globalData.features.length === 0) {
-      throw new Error('Location not found');
-    }
-    const f = globalData.features[0];
+  if (data.features && data.features.length > 0) {
+    const f = data.features[0];
     return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: f.properties.name || f.properties.label };
   }
 
-  const f = data.features[0];
-  return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: f.properties.name || f.properties.label };
+  // 4. Fallback: drop country restriction, keep circle (catches mis-spelled Indian places)
+  const circleUrl = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&size=5${circle}${focus}`;
+  const circleRes = await fetch(circleUrl);
+  const circleData = await circleRes.json();
+
+  if (circleData.features && circleData.features.length > 0) {
+    const f = circleData.features[0];
+    return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: f.properties.name || f.properties.label };
+  }
+
+  throw new Error('Location not found near you. Try a more specific name.');
 }
 
 // ─── ORS route ────────────────────────────────────────────────────────────────
