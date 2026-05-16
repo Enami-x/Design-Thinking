@@ -50,8 +50,8 @@ async function geocode(query) {
 }
 
 // ─── ORS route ────────────────────────────────────────────────────────────────
-async function fetchOrsRoute(from, to) {
-  const url = 'https://api.openrouteservice.org/v2/directions/foot-walking/geojson';
+async function fetchOrsRoute(from, to, profile = 'foot-walking') {
+  const url = `https://api.openrouteservice.org/v2/directions/${profile}/geojson`;
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -60,7 +60,6 @@ async function fetchOrsRoute(from, to) {
     },
     body: JSON.stringify({
       coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
-      alternative_routes: { target_count: 2, weight_factor: 1.4 },
     }),
   });
   if (!res.ok) {
@@ -68,14 +67,13 @@ async function fetchOrsRoute(from, to) {
     throw new Error(`ORS error ${res.status}: ${errText}`);
   }
   const data = await res.json();
-  return data.features.map(feature => {
-    const rawCoords = feature.geometry.coordinates;
-    const coords = rawCoords.map(([lng, lat]) => [lat, lng]);
-    const props = feature.properties.summary;
-    const distKm = (props.distance / 1000).toFixed(1);
-    const timeMins = Math.round(props.duration / 60);
-    return { coords, distKm, timeMins };
-  });
+  const feature = data.features[0];
+  const rawCoords = feature.geometry.coordinates;
+  const coords = rawCoords.map(([lng, lat]) => [lat, lng]);
+  const props = feature.properties.summary;
+  const distKm = (props.distance / 1000).toFixed(1);
+  const timeMins = Math.round(props.duration / 60);
+  return { coords, distKm, timeMins };
 }
 
 // ─── Map HTML generator (used for mobile WebView) ────────────────────────────
@@ -321,10 +319,18 @@ export default function HomeScreen() {
       : { lat: 17.4435, lng: 78.3772 };
 
     try {
-      // Fetch multiple routes from ORS
-      const orsRoutes = await fetchOrsRoute(from, dest);
-      const r1 = orsRoutes[0];
-      const r2 = orsRoutes.length > 1 ? orsRoutes[1] : orsRoutes[0];
+      // Fetch walking and cycling paths to get two distinct real-world routes
+      const [r1, r2_raw] = await Promise.all([
+        fetchOrsRoute(from, dest, 'foot-walking'),
+        fetchOrsRoute(from, dest, 'cycling-regular').catch(() => null)
+      ]);
+      
+      const r2 = r2_raw ? { ...r2_raw } : r1;
+      if (r2_raw) {
+        // Adjust cycling time to walking time (avg 12 mins per km)
+        r2.timeMins = Math.round(parseFloat(r2.distKm) * 12);
+      }
+      const orsRoutes = [r1, r2];
 
       // Score both routes against the backend
       const toPayload = (coords) => coords
@@ -389,6 +395,7 @@ export default function HomeScreen() {
 
     } catch (e) {
       console.warn('Route error:', e.message);
+      setSearchError('Route error: ' + e.message);
       // Fallback: draw a straight line so the UI still responds
       setMapState(prev => ({
         ...prev,
