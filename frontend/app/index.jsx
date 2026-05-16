@@ -17,7 +17,8 @@ const HEATMAP_COLORS = { safe: '#10d97e', caution: '#f5a623', danger: '#ff3b5c' 
 const DEFAULT_CENTER = [17.4435, 78.3772];
 
 // ─── ORS geocode ──────────────────────────────────────────────────────────────
-async function geocode(query) {
+// focusLoc: [lat, lng] to bias results towards user's current location
+async function geocode(query, focusLoc = null) {
   // 1. Detect raw coordinate input: "17.3850 78.4867" or "17.3850,78.4867"
   const coordMatch = query.match(/^\s*(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)\s*$/);
   if (coordMatch) {
@@ -28,14 +29,19 @@ async function geocode(query) {
     }
   }
 
-  // 2. Fast ORS Geocoding
-  const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&boundary.country=IN&size=1`;
+  // 2. Build focus param — bias results towards user's GPS location if available
+  const focus = focusLoc
+    ? `&focus.point.lat=${focusLoc[0]}&focus.point.lon=${focusLoc[1]}`
+    : '';
+
+  // 3. Fast ORS Geocoding, India-biased + proximity-biased
+  const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&boundary.country=IN&size=5${focus}`;
   const res = await fetch(url);
   const data = await res.json();
-  
+
   if (!data.features || data.features.length === 0) {
-    // Global fallback if India fails
-    const globalUrl = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&size=1`;
+    // Global fallback (no country restriction, still proximity-biased)
+    const globalUrl = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&size=5${focus}`;
     const globalRes = await fetch(globalUrl);
     const globalData = await globalRes.json();
     if (!globalData.features || globalData.features.length === 0) {
@@ -50,8 +56,9 @@ async function geocode(query) {
 }
 
 // ─── ORS route ────────────────────────────────────────────────────────────────
-async function fetchOrsRoute(from, to, profile = 'foot-walking') {
-  const url = `https://api.openrouteservice.org/v2/directions/${profile}/geojson`;
+// preference: 'recommended' (safest/pedestrian-optimised) | 'shortest' (most direct)
+async function fetchOrsRoute(from, to, preference = 'recommended') {
+  const url = 'https://api.openrouteservice.org/v2/directions/foot-walking/geojson';
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -60,6 +67,7 @@ async function fetchOrsRoute(from, to, profile = 'foot-walking') {
     },
     body: JSON.stringify({
       coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+      preference,
     }),
   });
   if (!res.ok) {
@@ -301,8 +309,12 @@ export default function HomeScreen() {
     if (!search.trim()) return;
     setSearching(true);
     setSearchError('');
+    // Reset route state so stale routes don't show while loading
+    setMapState(prev => ({ ...prev, safestCoords: [], fastestCoords: [], destination: null }));
+    setRouteDetailData(null);
     try {
-      const dest = await geocode(search.trim());
+      // Pass current GPS location so ORS biases results towards nearby places
+      const dest = await geocode(search.trim(), userLocation);
       await buildRoutes(dest);
     } catch (e) {
       setSearchError('Location not found. Try a more specific query.');
@@ -319,17 +331,11 @@ export default function HomeScreen() {
       : { lat: 17.4435, lng: 78.3772 };
 
     try {
-      // Fetch walking and cycling paths to get two distinct real-world routes
-      const [r1, r2_raw] = await Promise.all([
-        fetchOrsRoute(from, dest, 'foot-walking'),
-        fetchOrsRoute(from, dest, 'cycling-regular').catch(() => null)
+      // Fetch two real foot-walking routes: safest (recommended) and shortest path
+      const [r1, r2] = await Promise.all([
+        fetchOrsRoute(from, dest, 'recommended'),
+        fetchOrsRoute(from, dest, 'shortest'),
       ]);
-      
-      const r2 = r2_raw ? { ...r2_raw } : r1;
-      if (r2_raw) {
-        // Adjust cycling time to walking time (avg 12 mins per km)
-        r2.timeMins = Math.round(parseFloat(r2.distKm) * 12);
-      }
       const orsRoutes = [r1, r2];
 
       // Score both routes against the backend
