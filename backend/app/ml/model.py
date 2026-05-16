@@ -6,6 +6,7 @@ The model is loaded once at import time (singleton pattern).
 import os
 import joblib
 import numpy as np
+import pandas as pd
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
 
@@ -30,7 +31,7 @@ LABEL_TO_STR   = {1: "unsafe", 2: "caution", 3: "safe"}
 
 FEATURE_COLUMNS = [
     "hour_of_day", "day_of_week", "is_weekend", "is_night",
-    "location_type", "incident_count_7d", "incident_count_30d",
+    "location_type", "route_road_type", "incident_count_7d", "incident_count_30d",
     "lighting_score", "crowd_density",
 ]
 
@@ -47,16 +48,24 @@ def predict(features: dict) -> dict:
     """
     clf = _load_model()
 
-    row = np.array([[features[col] for col in FEATURE_COLUMNS]], dtype=float)
-    label    = int(clf.predict(row)[0])
-    probs    = clf.predict_proba(row)[0].tolist()
+    row   = pd.DataFrame([{col: features[col] for col in FEATURE_COLUMNS}])
+    label = int(clf.predict(row)[0])
+    probs = clf.predict_proba(row)[0].tolist()  # [p_unsafe, p_caution, p_safe]
+
+    # Continuous probability-weighted score: 15–95 range
+    # Gives real spread between routes instead of snapping to 3 fixed bands
+    p_unsafe, p_caution, p_safe = probs
+    score = int(round(p_unsafe * 15 + p_caution * 60 + p_safe * 95))
+    score = max(10, min(99, score))  # clamp to [10, 99]
+
+    label_map = {1: "unsafe", 2: "caution", 3: "safe"}
 
     return {
-        "score": LABEL_TO_SCORE[label],
-        "label": LABEL_TO_STR[label],
+        "score": score,
+        "label": label_map[label],
         "probabilities": {
-            "unsafe":  round(probs[0], 3),
-            "caution": round(probs[1], 3),
-            "safe":    round(probs[2], 3),
+            "unsafe":  round(p_unsafe,  3),
+            "caution": round(p_caution, 3),
+            "safe":    round(p_safe,    3),
         },
     }

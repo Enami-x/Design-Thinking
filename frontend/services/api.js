@@ -11,8 +11,10 @@ const BASE_URL = 'http://192.168.0.105:8000';
 export const API = {
   /**
    * Fetch safety score for a route.
+   * @param {Array}  coordinates    - [{lat, lng}, ...]
+   * @param {number} routeRoadType  - ORS waytype int (-1 = unknown)
    */
-  async predictScore(coordinates) {
+  async predictScore(coordinates, routeRoadType = -1) {
     try {
       const now = new Date();
       const payload = {
@@ -21,6 +23,7 @@ export const API = {
         day_of_week: (now.getDay() + 6) % 7, // Monday = 0
         incident_count_7d: 0,
         incident_count_30d: 0,
+        route_road_type: routeRoadType,
       };
 
       const res = await fetch(`${BASE_URL}/safety/predict-score`, {

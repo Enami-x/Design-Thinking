@@ -71,6 +71,7 @@ async function fetchOrsRoute(from, to, preference = 'recommended') {
     body: JSON.stringify({
       coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
       preference,
+      extra_info: ['waytype'],
     }),
   });
   if (!res.ok) {
@@ -84,7 +85,19 @@ async function fetchOrsRoute(from, to, preference = 'recommended') {
   const props = feature.properties.summary;
   const distKm = (props.distance / 1000).toFixed(1);
   const timeMins = Math.round(props.duration / 60);
-  return { coords, distKm, timeMins };
+
+  // Parse dominant ORS waytype from extra_info summary
+  // summary = [{value: typeCode, distance: m, amount: %}]
+  let dominantWaytype = -1;
+  try {
+    const summary = feature.properties.extras?.waytype?.summary;
+    if (summary && summary.length > 0) {
+      const top = summary.reduce((a, b) => (b.distance > a.distance ? b : a));
+      dominantWaytype = top.value;
+    }
+  } catch (_) { /* leave as -1 */ }
+
+  return { coords, distKm, timeMins, dominantWaytype };
 }
 
 // ─── Map HTML generator (used for mobile WebView) ────────────────────────────
@@ -347,20 +360,27 @@ export default function HomeScreen() {
         .map(([lat, lng]) => ({ lat, lng }));
 
       const [score1, score2] = await Promise.all([
-        API.predictScore(toPayload(r1.coords)),
-        API.predictScore(toPayload(r2.coords)),
+        API.predictScore(toPayload(r1.coords), r1.dominantWaytype),
+        API.predictScore(toPayload(r2.coords), r2.dominantWaytype),
       ]);
 
       const s1 = score1?.safety_score ?? 78;
-      const s2 = score2?.safety_score ?? 55;
+      const s2 = score2?.safety_score ?? 65;
 
-      // Assign safest vs fastest based on ML scores
-      let safeR = r1, fastR = r2, safeS = s1, fastS = s2, safeML = score1;
-      if (s2 > s1 && orsRoutes.length > 1) {
-        safeR = r2; safeS = s2; safeML = score2;
-        fastR = r1; fastS = s1;
-      } else if (r2.timeMins < r1.timeMins && orsRoutes.length > 1) {
+      // Dynamically assign roles based on actual data
+      let safeR, fastR, safeS, fastS, safeML;
+
+      // 1. Safest Route = highest ML score
+      if (s1 >= s2) {
         safeR = r1; safeS = s1; safeML = score1;
+      } else {
+        safeR = r2; safeS = s2; safeML = score2;
+      }
+
+      // 2. Fastest Route = lowest travel time
+      if (r1.timeMins <= r2.timeMins) {
+        fastR = r1; fastS = s1;
+      } else {
         fastR = r2; fastS = s2;
       }
 

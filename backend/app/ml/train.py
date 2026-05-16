@@ -24,6 +24,8 @@ def generate_data(n: int = N_SAMPLES) -> pd.DataFrame:
     hour         = rng.integers(0, 24, n)
     day_of_week  = rng.integers(0, 7, n)
     location     = rng.integers(0, 5, n)
+    # ORS waytype: 0=unknown,1=state road,2=road,3=street,4=path,5=track,7=footway,8=steps
+    road_type    = rng.integers(0, 9, n)
     inc_7d       = rng.integers(0, 20, n)
     inc_30d      = inc_7d + rng.integers(0, 15, n)
     lighting     = rng.uniform(0, 1, n)
@@ -31,6 +33,15 @@ def generate_data(n: int = N_SAMPLES) -> pd.DataFrame:
 
     is_night   = ((hour >= 20) | (hour < 5)).astype(int)
     is_weekend = (day_of_week >= 5).astype(int)
+
+    # Main roads (ORS type 1 or 2) are well-lit and busy → improve lighting/crowd
+    is_main_road = ((road_type == 1) | (road_type == 2)).astype(int)
+    lighting = np.where(is_main_road, np.clip(lighting + 0.3, 0, 1), lighting)
+    crowd    = np.where(is_main_road, np.clip(crowd + 0.2, 0, 1), crowd)
+
+    # Paths/footways/steps (ORS 4,5,7,8) are dim and isolated
+    is_alley = ((road_type == 4) | (road_type == 5) | (road_type == 7) | (road_type == 8)).astype(int)
+    lighting = np.where(is_alley & (is_night == 1), lighting * 0.3, lighting)
 
     # Derived lighting: underpass at night is always dark
     lighting = np.where((location == 3) & (is_night == 1), lighting * 0.3, lighting)
@@ -42,9 +53,11 @@ def generate_data(n: int = N_SAMPLES) -> pd.DataFrame:
         + is_weekend * 0.5
         + (location == 3) * 2.0       # underpass
         + (location == 2) * 1.0       # park at night
-        + (inc_7d / 5.0)
+        + (inc_7d / 2.5)              # ← doubled from /5.0: incidents now dominate
         + (1 - lighting) * 1.5
-        + (1 - crowd) * 0.5           # empty streets are riskier
+        + (1 - crowd) * 0.5
+        - is_main_road * 1.2          # ← main roads get a safety bonus
+        + is_alley * 1.0              # ← alleys/footways get a risk penalty
         + rng.normal(0, 0.5, n)       # noise
     )
 
@@ -53,16 +66,17 @@ def generate_data(n: int = N_SAMPLES) -> pd.DataFrame:
                                    1)) # unsafe
 
     df = pd.DataFrame({
-        "hour_of_day":      hour,
-        "day_of_week":      day_of_week,
-        "is_weekend":       is_weekend,
-        "is_night":         is_night,
-        "location_type":    location,
+        "hour_of_day":        hour,
+        "day_of_week":        day_of_week,
+        "is_weekend":         is_weekend,
+        "is_night":           is_night,
+        "location_type":      location,
+        "route_road_type":    road_type,
         "incident_count_7d":  inc_7d,
         "incident_count_30d": inc_30d,
-        "lighting_score":   np.round(lighting, 4),
-        "crowd_density":    np.round(crowd, 4),
-        "safety_label":     labels,
+        "lighting_score":     np.round(lighting, 4),
+        "crowd_density":      np.round(crowd, 4),
+        "safety_label":       labels,
     })
     return df
 

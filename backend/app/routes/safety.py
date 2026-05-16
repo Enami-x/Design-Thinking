@@ -28,6 +28,7 @@ class PredictRequest(BaseModel):
     day_of_week: int = Field(..., ge=0, le=6)
     incident_count_7d:  int = Field(default=0, ge=0)
     incident_count_30d: int = Field(default=0, ge=0)
+    route_road_type:    int = Field(default=-1)  # ORS waytype; -1 = unknown
 
 
 class BreakdownSchema(BaseModel):
@@ -58,6 +59,7 @@ def predict_score(body: PredictRequest):
             day_of_week=body.day_of_week,
             incident_count_7d=body.incident_count_7d,
             incident_count_30d=body.incident_count_30d,
+            route_road_type=body.route_road_type,
         )
         result = ml.predict(features)
         scores.append(result["score"])
