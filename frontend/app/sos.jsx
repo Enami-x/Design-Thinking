@@ -22,21 +22,55 @@ function useTimer() {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-// ─── Live Map — draws the actual ORS road-following route ────────────────────
+// ─── Live Map — live-tracking GPS + real ORS route ───────────────────────────
 function LiveMap({ destCoords, routeCoords }) {
-  const mapRef       = useRef(null);
-  const [userCoords, setUserCoords] = useState(null);
+  const mapRef         = useRef(null);   // Leaflet DOM ref (web)
+  const webViewRef     = useRef(null);   // WebView ref (mobile)
+  const mapReadyRef    = useRef(false);  // true once WebView has rendered
+  const [userCoords, setUserCoords] = useState(null); // first GPS fix only
 
   useEffect(() => {
+    let subscription = null;
+
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') return;
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      setUserCoords([loc.coords.latitude, loc.coords.longitude]);
+
+      // Subscribe to live position updates
+      subscription = await Location.watchPositionAsync(
+        {
+          accuracy:         Location.Accuracy.BestForNavigation,
+          timeInterval:     3000,  // at most every 3 s
+          distanceInterval: 8,     // and at least 8 m moved
+        },
+        (loc) => {
+          const lat = loc.coords.latitude;
+          const lng = loc.coords.longitude;
+
+          setUserCoords(prev => {
+            if (!prev) return [lat, lng]; // first fix → triggers WebView build
+            return prev; // keep state stable; update via JS injection instead
+          });
+
+          // Smoothly move the dot inside the already-rendered WebView
+          if (mapReadyRef.current && webViewRef.current) {
+            webViewRef.current.injectJavaScript(`
+              (function() {
+                if (window.userMarker) {
+                  window.userMarker.setLatLng([${lat}, ${lng}]);
+                }
+              })();
+              true;
+            `);
+          }
+        }
+      );
     })();
+
+    return () => { if (subscription) subscription.remove(); };
   }, []);
 
-  // Web: Leaflet — re-init when coords change
+  // Web: Leaflet — re-init when destination / route changes
   useEffect(() => {
     if (Platform.OS !== 'web' || !userCoords) return;
     let map;
@@ -46,8 +80,7 @@ function LiveMap({ destCoords, routeCoords }) {
       if (!el) return;
       if (el._leaflet_id) { try { L.map(el).remove(); } catch (_) {} }
 
-      const dest    = destCoords ?? [userCoords[0] - 0.015, userCoords[1] + 0.009];
-      // Use full ORS polyline if available, otherwise straight line
+      const dest       = destCoords ?? [userCoords[0] - 0.015, userCoords[1] + 0.009];
       const linePoints = (routeCoords && routeCoords.length > 2) ? routeCoords : [userCoords, dest];
 
       map = L.map(el, { zoomControl: false });
@@ -65,7 +98,8 @@ function LiveMap({ destCoords, routeCoords }) {
         </div>`,
         className: '', iconSize: [22, 22], iconAnchor: [11, 11],
       });
-      L.marker(userCoords, { icon: userIcon }).addTo(map);
+      // Store as window global so future injectJavaScript calls can find it
+      window.userMarker = L.marker(userCoords, { icon: userIcon }).addTo(map);
       L.circleMarker(dest, { radius: 8, color: '#10d97e', fillColor: '#10d97e', fillOpacity: 0.9, weight: 2 }).addTo(map);
     };
     init();
@@ -76,7 +110,7 @@ function LiveMap({ destCoords, routeCoords }) {
     return <div ref={mapRef} style={{ width: '100%', height: '100%' }} />;
   }
 
-  // Mobile: loading until GPS ready
+  // Mobile: loading until first GPS fix
   if (!userCoords) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#080c10' }}>
@@ -87,7 +121,8 @@ function LiveMap({ destCoords, routeCoords }) {
 
   const dest       = destCoords ?? [userCoords[0] - 0.015, userCoords[1] + 0.009];
   const linePoints = (routeCoords && routeCoords.length > 2) ? routeCoords : [userCoords, dest];
-  const mapKey     = `${userCoords[0]},${userCoords[1]}_${dest[0]},${dest[1]}_${linePoints.length}`;
+  // Key: only changes when destination / route changes — NOT on every GPS tick
+  const mapKey = `${dest[0]},${dest[1]}_${linePoints.length}`;
 
   const mapHtml = `
     <html>
@@ -105,35 +140,31 @@ function LiveMap({ destCoords, routeCoords }) {
           }
           .pulse-ring  { position: absolute; inset: 0; border-radius: 50%; background: #00d4b0; animation: pulse 2s ease-out infinite; }
           .pulse-ring2 { position: absolute; inset: 0; border-radius: 50%; background: #00d4b0; animation: pulse 2s ease-out 0.6s infinite; }
-          .user-dot  { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; position: relative; }
-          .user-core { width: 12px; height: 12px; border-radius: 50%; background: #00d4b0; border: 2.5px solid white; position: relative; z-index: 2; }
+          .user-dot    { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; position: relative; }
+          .user-core   { width: 12px; height: 12px; border-radius: 50%; background: #00d4b0; border: 2.5px solid white; position: relative; z-index: 2; }
         </style>
       </head>
       <body>
         <div id="map"></div>
         <script>
-          const user       = ${JSON.stringify(userCoords)};
+          const initUser   = ${JSON.stringify(userCoords)};
           const dest       = ${JSON.stringify(dest)};
           const linePoints = ${JSON.stringify(linePoints)};
           const map        = L.map('map', { zoomControl: false });
 
           L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
 
-          // Draw the full road-following polyline (or straight line as fallback)
-          const poly = L.polyline(linePoints, {
-            color: '#00d4b0', weight: 5, opacity: 0.9
-          }).addTo(map);
-
+          const poly = L.polyline(linePoints, { color: '#00d4b0', weight: 5, opacity: 0.9 }).addTo(map);
           map.fitBounds(poly.getBounds(), { padding: [50, 50] });
 
-          // Pulsing user location dot
           const userIcon = L.divIcon({
             html: '<div class="user-dot"><div class="pulse-ring"></div><div class="pulse-ring2"></div><div class="user-core"></div></div>',
             className: '', iconSize: [22, 22], iconAnchor: [11, 11]
           });
-          L.marker(user, { icon: userIcon }).addTo(map);
 
-          // Destination dot
+          // Expose as window.userMarker so injectJavaScript can update it
+          window.userMarker = L.marker(initUser, { icon: userIcon }).addTo(map);
+
           L.circleMarker(dest, {
             radius: 8, color: '#10d97e', fillColor: '#10d97e', fillOpacity: 0.9, weight: 2
           }).addTo(map);
@@ -145,10 +176,12 @@ function LiveMap({ destCoords, routeCoords }) {
   return (
     <WebView
       key={mapKey}
+      ref={webViewRef}
       originWhitelist={['*']}
       source={{ html: mapHtml }}
       style={{ backgroundColor: '#080c10' }}
       javaScriptEnabled
+      onLoadEnd={() => { mapReadyRef.current = true; }}
     />
   );
 }

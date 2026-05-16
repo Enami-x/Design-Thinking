@@ -16,7 +16,7 @@ import { setRouteStore } from '../store/routeStore';
 const HEATMAP_COLORS = { safe: '#10d97e', caution: '#f5a623', danger: '#ff3b5c' };
 const DEFAULT_CENTER = [17.4435, 78.3772];
 
-// ─── Nominatim geocode ────────────────────────────────────────────────────────
+// ─── ORS geocode ──────────────────────────────────────────────────────────────
 async function geocode(query) {
   // 1. Detect raw coordinate input: "17.3850 78.4867" or "17.3850,78.4867"
   const coordMatch = query.match(/^\s*(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)\s*$/);
@@ -28,42 +28,25 @@ async function geocode(query) {
     }
   }
 
-  // Required by Nominatim ToS — without this, requests get rejected
-  const HEADERS = {
-    'Accept-Language': 'en',
-    'User-Agent': 'SafeWalk-App/1.0 (student-project)',
-  };
-
-  // 2. Try with India bias first (faster, more relevant for Indian users)
-  const indiaUrl =
-    `https://nominatim.openstreetmap.org/search` +
-    `?q=${encodeURIComponent(query)}` +
-    `&format=json&limit=3&countrycodes=in&addressdetails=0`;
-
-  const indiaRes  = await fetch(indiaUrl, { headers: HEADERS });
-  const indiaData = await indiaRes.json();
-
-  if (indiaData.length > 0) {
-    const r = indiaData[0];
-    // Short readable name: first two comma-separated parts
-    const name = r.display_name.split(',').slice(0, 2).join(',').trim();
-    return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), name };
+  // 2. Fast ORS Geocoding
+  const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&boundary.country=IN&size=1`;
+  const res = await fetch(url);
+  const data = await res.json();
+  
+  if (!data.features || data.features.length === 0) {
+    // Global fallback if India fails
+    const globalUrl = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(query)}&size=1`;
+    const globalRes = await fetch(globalUrl);
+    const globalData = await globalRes.json();
+    if (!globalData.features || globalData.features.length === 0) {
+      throw new Error('Location not found');
+    }
+    const f = globalData.features[0];
+    return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: f.properties.name || f.properties.label };
   }
 
-  // 3. Fallback: global search (for coordinates typed as a place name, etc.)
-  const globalUrl =
-    `https://nominatim.openstreetmap.org/search` +
-    `?q=${encodeURIComponent(query)}` +
-    `&format=json&limit=1&addressdetails=0`;
-
-  const globalRes  = await fetch(globalUrl, { headers: HEADERS });
-  const globalData = await globalRes.json();
-
-  if (globalData.length === 0) throw new Error('Location not found');
-
-  const r = globalData[0];
-  const name = r.display_name.split(',').slice(0, 2).join(',').trim();
-  return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), name };
+  const f = data.features[0];
+  return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: f.properties.name || f.properties.label };
 }
 
 // ─── ORS route ────────────────────────────────────────────────────────────────
@@ -77,6 +60,7 @@ async function fetchOrsRoute(from, to) {
     },
     body: JSON.stringify({
       coordinates: [[from.lng, from.lat], [to.lng, to.lat]],
+      alternative_routes: { target_count: 2, weight_factor: 1.4 },
     }),
   });
   if (!res.ok) {
@@ -84,14 +68,14 @@ async function fetchOrsRoute(from, to) {
     throw new Error(`ORS error ${res.status}: ${errText}`);
   }
   const data = await res.json();
-  // GeoJSON response: features[0].geometry.coordinates = [[lng,lat], ...]
-  const feature = data.features[0];
-  const rawCoords = feature.geometry.coordinates; // [lng, lat] pairs
-  const coords = rawCoords.map(([lng, lat]) => [lat, lng]); // convert to [lat, lng] for Leaflet
-  const props = feature.properties.summary;
-  const distKm = (props.distance / 1000).toFixed(1);
-  const timeMins = Math.round(props.duration / 60);
-  return { coords, distKm, timeMins };
+  return data.features.map(feature => {
+    const rawCoords = feature.geometry.coordinates;
+    const coords = rawCoords.map(([lng, lat]) => [lat, lng]);
+    const props = feature.properties.summary;
+    const distKm = (props.distance / 1000).toFixed(1);
+    const timeMins = Math.round(props.duration / 60);
+    return { coords, distKm, timeMins };
+  });
 }
 
 // ─── Map HTML generator (used for mobile WebView) ────────────────────────────
@@ -337,62 +321,70 @@ export default function HomeScreen() {
       : { lat: 17.4435, lng: 78.3772 };
 
     try {
-      // Fetch one route from ORS
-      const orsRoute = await fetchOrsRoute(from, dest);
-      const safestCoords = orsRoute.coords;
-
-      // Simulate "fastest" route
-      const fastestCoords = safestCoords.filter((_, i) => i % 3 === 0 || i === safestCoords.length - 1);
+      // Fetch multiple routes from ORS
+      const orsRoutes = await fetchOrsRoute(from, dest);
+      const r1 = orsRoutes[0];
+      const r2 = orsRoutes.length > 1 ? orsRoutes[1] : orsRoutes[0];
 
       // Score both routes against the backend
       const toPayload = (coords) => coords
         .filter((_, i) => i % Math.max(1, Math.floor(coords.length / 8)) === 0)
         .map(([lat, lng]) => ({ lat, lng }));
 
-      const [safestScore, fastestScore] = await Promise.all([
-        API.predictScore(toPayload(safestCoords)),
-        API.predictScore(toPayload(fastestCoords)),
+      const [score1, score2] = await Promise.all([
+        API.predictScore(toPayload(r1.coords)),
+        API.predictScore(toPayload(r2.coords)),
       ]);
 
-      const safestFinal = safestScore?.safety_score  ?? 78;
-      const fastestFinal = fastestScore?.safety_score ?? 55;
+      const s1 = score1?.safety_score ?? 78;
+      const s2 = score2?.safety_score ?? 55;
+
+      // Assign safest vs fastest based on ML scores
+      let safeR = r1, fastR = r2, safeS = s1, fastS = s2, safeML = score1;
+      if (s2 > s1 && orsRoutes.length > 1) {
+        safeR = r2; safeS = s2; safeML = score2;
+        fastR = r1; fastS = s1;
+      } else if (r2.timeMins < r1.timeMins && orsRoutes.length > 1) {
+        safeR = r1; safeS = s1; safeML = score1;
+        fastR = r2; fastS = s2;
+      }
 
       setMapState(prev => ({
         ...prev,
         destination: [dest.lat, dest.lng],
-        safestCoords,
-        fastestCoords,
+        safestCoords: safeR.coords,
+        fastestCoords: fastR.coords,
         activeRoute,
       }));
 
       setRouteStats({
-        safest:  { km: `${orsRoute.distKm} km`, time: `${orsRoute.timeMins} min` },
-        fastest: { km: `${(orsRoute.distKm * 0.82).toFixed(1)} km`, time: `${Math.round(orsRoute.timeMins * 0.65)} min` },
+        safest:  { km: `${safeR.distKm} km`, time: `${safeR.timeMins} min` },
+        fastest: { km: `${fastR.distKm} km`, time: `${fastR.timeMins} min` },
       });
-      setScores({ safest: safestFinal, fastest: fastestFinal });
+      setScores({ safest: safeS, fastest: fastS });
 
       // Store for route-detail navigation AND global Journey tab access
       const routeData = {
         destName:        dest.name || `${dest.lat}, ${dest.lng}`,
         destLat:         dest.lat,
         destLng:         dest.lng,
-        safestKm:        orsRoute.distKm,
-        safestTime:      orsRoute.timeMins,
-        fastestKm:       (orsRoute.distKm * 0.82).toFixed(1),
-        fastestTime:     Math.round(orsRoute.timeMins * 0.65),
-        safestScore:     safestFinal,
-        fastestScore:    fastestFinal,
-        lighting:        safestScore?.breakdown?.lighting        ?? 0.8,
-        crowd:           safestScore?.breakdown?.crowd           ?? 0.5,
-        incidentDensity: safestScore?.breakdown?.incident_density ?? 0,
+        safestKm:        safeR.distKm,
+        safestTime:      safeR.timeMins,
+        fastestKm:       fastR.distKm,
+        fastestTime:     fastR.timeMins,
+        safestScore:     safeS,
+        fastestScore:    fastS,
+        lighting:        safeML?.breakdown?.lighting        ?? 0.8,
+        crowd:           safeML?.breakdown?.crowd           ?? 0.5,
+        incidentDensity: safeML?.breakdown?.incident_density ?? 0,
       };
       setRouteDetailData(routeData);
       setRouteStore({
         destLat:     dest.lat,
         destLng:     dest.lng,
         destName:    dest.name || `${dest.lat}, ${dest.lng}`,
-        timeMins:    orsRoute.timeMins,
-        routeCoords: safestCoords,   // actual road-following polyline [[lat,lng],...]
+        timeMins:    activeRoute === 'fastest' ? fastR.timeMins : safeR.timeMins,
+        routeCoords: activeRoute === 'fastest' ? fastR.coords : safeR.coords,
       });
 
     } catch (e) {

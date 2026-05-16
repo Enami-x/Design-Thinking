@@ -6,7 +6,7 @@ import Constants from 'expo-constants';
 
 // If you are using a physical device, replace 'localhost' with your machine's IP address.
 // For example: 'http://192.168.1.10:8000'
-const BASE_URL = 'http://10.100.4.225:8000';
+const BASE_URL = 'http://192.168.0.105:8000';
 
 export const API = {
   /**

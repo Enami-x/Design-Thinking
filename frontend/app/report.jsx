@@ -102,15 +102,32 @@ export default function ReportScreen() {
     if (!selectedCategory) return;
     setSubmitError('');
 
+    // Default fallback coordinates (Hyderabad city center)
+    const FALLBACK_LAT = 17.4435;
+    const FALLBACK_LNG = 78.3772;
+
+    let lat = FALLBACK_LAT;
+    let lng = FALLBACK_LNG;
+
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') throw new Error('Location permission denied');
-
-      const loc = await Location.getCurrentPositionAsync({});
+      if (status === 'granted') {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ timeout: 5000 });
+          lat = loc.coords.latitude;
+          lng = loc.coords.longitude;
+        } catch (gpsErr) {
+          console.warn('GPS unavailable, using fallback location:', gpsErr.message);
+          // Continue with fallback coordinates — don't block the report
+        }
+      } else {
+        console.warn('Location permission denied, using fallback location.');
+        // Continue with fallback coordinates — don't block the report
+      }
 
       const payload = {
-        lat: loc.coords.latitude,
-        lng: loc.coords.longitude,
+        lat,
+        lng,
         type: selectedCategory === 'lighting' ? 'poor-lighting' : selectedCategory,
         time_of_day: selectedTime,
         anonymous,
@@ -130,7 +147,12 @@ export default function ReportScreen() {
           router.push('/alerts');
         }, 1400));
     } catch (err) {
-      setSubmitError('Failed to submit report. Please check your connection and try again.');
+      console.error('Report submit error:', err);
+      if (err.message?.includes('Network') || err.message?.includes('fetch')) {
+        setSubmitError('Cannot reach server. Make sure the backend is running and your IP in api.js is correct.');
+      } else {
+        setSubmitError(`Submission failed: ${err.message || 'Unknown error. Please try again.'}`);
+      }
     }
   };
 
